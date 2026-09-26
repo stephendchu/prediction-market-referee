@@ -1,0 +1,17 @@
+# Everything the pipeline writes at runtime. The repository holds no data.
+data/
+artifacts/
+*.duckdb
+*.duckdb.wal
+*.parquet
+*.jsonl
+config/*_holdout_freeze.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/

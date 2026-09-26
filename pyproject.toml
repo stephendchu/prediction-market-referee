@@ -1,0 +1,37 @@
+[project]
+name = "prediction-market-referee"
+version = "0.1.0"
+description = "A pre-registered evaluation harness for probabilistic forecasts against a market baseline, run on synthetic worlds with known answers (research only; no trading)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "lightgbm>=4.3",
+    "duckdb>=1.0",
+    "pyarrow>=16",
+    "pyyaml>=6.0",
+    "pytz>=2024.1",  # duckdb needs it to return TIMESTAMPTZ values
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[project.scripts]
+quant = "src.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]  # shared row builders: `from factories import ...`

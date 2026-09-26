@@ -1,0 +1,139 @@
+sport: mlb
+dataset: synthetic                # synthetic | live. Override with QUANT_DATASET. This repository ships
+                                  # no real data and no real-data adapter: `live` exists only so the
+                                  # refusals that guard a real dataset can be tested.
+
+# ---------------------------------------------------------------------------
+# Synthetic dataset: generated, clearly labeled (source = synthetic,
+# is_synthetic = true). Lets the whole pipeline run with no API keys. It is not
+# evidence about any real market.
+# ---------------------------------------------------------------------------
+synthetic:
+  seed: 20260924
+  seasons: [2023, 2024, 2025, 2026]
+  through_date: 2026-09-24        # nothing after this; games on this date have no outcome yet
+  quote_offsets_min: [180, 120, 60, 30, 10]
+
+# ---------------------------------------------------------------------------
+# Research protocol. Everything below is fixed before results are seen and is
+# never tuned on evaluation or holdout data (Sec 14, Sec 26).
+# ---------------------------------------------------------------------------
+snapshot_policy:                  # 26.10 — spec rules
+  canonical_offset_min: 30
+  sensitivity_offsets_min: [180, 120, 60, 10]
+  max_quote_age_s: 300
+  max_spread: 0.10
+  require_displayed_size: true
+  consensus_max_age_min: 60       # a book price older than this at the quote time is not "the consensus"
+  liquidity_min_prior_obs: 300    # tercile cut points need this many earlier-date observations
+
+walk_forward:                     # 26.2 / 26.3. Most recent period = FINAL_HOLDOUT (never evaluated here)
+  periods:                        # synthetic dataset (mechanism tests; never frozen)
+    - {id: 2023H1, role: train_only, start: 2023-03-01, end: 2023-06-30}
+    - {id: 2023H2, role: evaluation, start: 2023-07-01, end: 2023-11-30}
+    - {id: 2024H1, role: evaluation, start: 2024-03-01, end: 2024-06-30}
+    - {id: 2024H2, role: evaluation, start: 2024-07-01, end: 2024-11-30}
+    - {id: 2025H1, role: evaluation, start: 2025-03-01, end: 2025-06-30}
+    - {id: 2025H2, role: evaluation, start: 2025-07-01, end: 2025-11-30}
+    - {id: 2026H1, role: evaluation, start: 2026-03-01, end: 2026-06-30}
+    - {id: 2026H2, role: holdout, start: 2026-07-01, end: 2026-11-30}
+  live_periods:                   # a real dataset (none ships here); used by the refusal tests
+    - {id: 2025H1, role: train_only, start: 2025-03-01, end: 2025-06-30}
+    - {id: 2025H2, role: evaluation, start: 2025-07-01, end: 2025-11-30}
+    - {id: 2026RS, role: holdout, start: 2026-01-01, end: 2026-12-31}
+
+strategy:
+  family: outcome_residual        # outcome_residual (label = game outcome, scored vs the market's Brier
+                                  # baseline, 26.1) | market_behavior (26.20 stub: refused)
+
+features:                         # which feature families the model may use
+  preset: market_only             # a feature preset, never a run mode; override with `quant train --preset`
+  presets:
+    market_only: [market]         # exchange price/move, sportsbook consensus, liquidity, timing; no baseball
+    mlb_level1: [market, starter, offense, bullpen, environment]   # Sec 8 Level 1
+  # Baseball families are refused on a live dataset until a docs/decisions/
+  # record opens them; set this to that record. Synthetic data ignores it
+  # (mechanism test).
+  baseball_gate_decision: null
+
+model:
+  train_offset_min: 30            # fit on canonical (T-30) observations only
+  seed: 7
+  min_train_games: 300            # a period with fewer earlier games gets no model
+  calibration_tie_se: 1.0         # simpler calibrator wins within 1 game-clustered SE of the best
+  complexity_tie_se: 1.0          # same rule for the penalty / tree-count grids below
+  # Complexity is chosen per training window on its own calibration split (latest
+  # 25% of the window), never on the period being predicted.
+  logistic:
+    l2_grid: [1, 10, 100, 1000, 10000, 100000]   # ridge penalty on standardized features; ties -> larger
+    winsorize: [0.005, 0.995]     # clip each feature to its training-window quantiles before standardizing
+  lgbm:
+    num_leaves: 7
+    learning_rate: 0.03
+    n_estimators_grid: [25, 100, 300]              # ties -> fewer trees
+    min_child_samples: 200
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+    reg_lambda: 5.0
+  calibration_methods: [none, platt, isotonic]
+  calibration_fraction: 0.25      # latest 25% of each training window (by time) picks the calibrator
+  selection:                      # LightGBM is used only if it beats logistic out of sample
+    min_periods_won: 4            # ... in at least this many evaluation periods
+    require_lower_aggregate_brier: true
+
+uncertainty:                      # 26.12 — validated by coverage, never by P&L
+  nominal_coverage: 0.90
+  coverage_band: [0.87, 0.93]
+  ensemble_size: 20               # game-level bootstrap refits
+
+decision:                         # Sec 14
+  minimum_edge: 0.04
+  maximum_spread: 0.10
+  minimum_fill_contracts: 10
+
+fees:
+  maker_or_taker: taker           # the backtest crosses the spread
+
+execution:                        # 26.9
+  spread_penalty_scenarios: [0.0, 0.25, 0.50, 1.00]
+  baseline_penalty: 0.25
+  max_fraction_of_top_of_book: 0.10
+  exit_rule: hold_to_settlement   # hold_to_settlement | exit_at_offset
+  exit_offset_min: 10             # exit_at_offset only: sell at the T-10 snapshot (ignored when holding)
+
+backtest:
+  stake_dollars: 100              # flat stake per trade; Kelly is paper-only (Sec 15)
+
+paper:                            # Sec 15, 21
+  bankroll: 10000
+  kelly_fraction: 0.25
+  max_position_frac: 0.01
+  max_game_frac: 0.03
+  max_daily_new_frac: 0.05
+
+review:                           # Sec 26 acceptance rules
+  bss_min: 0.005
+  bootstrap_resamples: 10000
+  ci_level: 0.95
+  min_periods: 5
+  min_period_win_fraction: 0.80   # "beat the market in >= 4 of 5 periods" (26.2), as a fraction
+  period_bss_floor: 0.001         # 26.2: a period counts as improved only if its BSS >= this
+  max_period_share: 0.50
+  bucket_edges: [0.0, 0.02, 0.04, 0.06, 0.08]   # <0, 0-2, 2-4, 4-6, 6-8, >8 %
+  bucket_min_games: 200
+  calibration_bins: 10
+  severe_calibration_ece_excess: 0.02   # model ECE - market ECE above this = severe failure (26.19 REJECTED)
+  calibration_slope_band: [0.5, 1.5]    # 26.13: the calibration slope's whole CI (ci_level, game bootstrap) outside this = severe failure
+  coverage_bin_min_obs: 500             # min observations per p_model bin (uncertainty scale tuning and the 26.12 outcome bound)
+  coverage_bound_alpha: 0.05            # 26.12 outcome bound: simultaneous error rate over bins (Bonferroni)
+  monotonic_spearman_min: 0.5           # "broadly monotonic" buckets (26.7, 26.19)
+  shuffle_p_max: 0.05                   # 26.17: real result in the favorable 5% tail
+  fdr_q: 0.10
+  fdr_families: [ablation, hypothesis, model]   # 26.5: the BH-FDR set; negative controls are sanity checks, reported apart
+  shuffle_permutations: 1000
+  concentration_top10_max: 0.40
+  concentration_team_max: 0.20
+  paper_min_trades: 200
+  paper_min_days: 60
+  seed: 7

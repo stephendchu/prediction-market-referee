@@ -1,0 +1,220 @@
+# Hypothesis registry, synthetic MLB world (spec 26.4).
+#
+# Registered BEFORE any result was examined (2026-09-24). A registered
+# hypothesis is never edited: `quant train` registers this file, and a changed
+# definition under an existing id is refused (src/backtest/registry.py). A new
+# idea needs a new id, labelled EXPLORATORY until tested on unseen data.
+#
+# `status` (ACTIVE | PAUSED | DISABLED, default ACTIVE) is not part of the
+# definition: changing it appends a row to the hypothesis_status log, keeps the
+# hypothesis visible in every report (26.5), and needs `status_reason` and
+# `status_decision` (a docs/decisions/ record). A non-ACTIVE hypothesis is not
+# fitted and not tested; experiments it recorded earlier stay in the registry
+# and in its BH-FDR family (more tests, so the correction stays conservative).
+#
+# `family` is the feature family (feature_definitions.family). BH-FDR (26.5) is
+# applied within an experiment family (ablation, hypothesis, negative_control).
+# Evaluation periods are the walk-forward evaluation periods of config/mlb.yaml;
+# the final holdout (2026H2) is the acceptance benchmark and stays locked.
+
+hypotheses:
+
+  - hypothesis_id: H_MLB_L1_MARKET
+    family: market
+    label: CONFIRMATORY
+    description: Market-state features (price level, recent move) add nothing beyond the price itself.
+    mechanism: >-
+      The residual model starts from logit(p_mid). Level and momentum of the
+      exchange price are already in the price unless the market under- or
+      over-reacts; this family tests that.
+    features:
+      - {name: market_logit, definition: "logit(p_mid), p_mid = (yes_bid + yes_ask) / 2 at the observation's quote"}
+      - {name: market_move_60m, definition: "p_mid - midpoint of the same contract's latest quote with quote_ts <= quote_ts - 60 min"}
+    expected_direction: none (null hypothesis of an efficient price)
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: >-
+      Ablation delta Brier (full model minus family vs full model), paired game
+      bootstrap, per evaluation period and pooled (Sec 19).
+
+  # Added 2026-09-26, after synthetic diagnostics showed the cross-market gap (spec Sec 6) was not in
+  # the model. A new id because H_MLB_L1_MARKET is registered and never edited. It is CONFIRMATORY
+  # although this file's header says a new idea starts EXPLORATORY: the owner's decision puts it in
+  # the residual model's X, and EXPLORATORY features never enter X. The conflict is recorded here.
+  - hypothesis_id: H_MLB_L1_GAP
+    family: market
+    label: CONFIRMATORY
+    description: The sportsbook consensus gap adds nothing beyond the exchange price.
+    mechanism: >-
+      Spec Sec 6 names cross_market_gap a first-class signal and Sec 8 lists the
+      cross-market difference in Level 1. The residual model is
+      z_fair = logit(p_mid) + f(X), so the gap enters in log-odds: a consensus
+      the market has not absorbed moves fair value toward the books.
+    features:
+      - {name: cross_market_gap_log_odds, definition: "logit(p_consensus) - logit(p_mid); p_consensus = YES consensus (mean de-vigged book probability available <= quote_ts, <= 60 min old); NULL without consensus"}
+    expected_direction: none (null hypothesis of an efficient price)
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: >-
+      The market-family ablation delta Brier (full model minus the market
+      family vs full model), which removes this feature with the rest of the
+      family; paired game bootstrap, per evaluation period and pooled (Sec 19).
+      No separate experiment.
+
+  - hypothesis_id: H_MLB_L1_STARTER
+    family: starter
+    label: CONFIRMATORY
+    description: Point-in-time starting-pitcher quality and workload explain part of the market residual.
+    mechanism: >-
+      Markets price the announced starter; shrunk career rates and workload may
+      be weighted imperfectly, especially for starters with short track records.
+    features:
+      - {name: sp_fip_diff, definition: "YES starter minus opponent: FIP-like (13 HR + 3 (BB + HBP) - 2 K) / IP + 3.10, career lines available <= cutoff, 40 IP prior toward the point-in-time league rate"}
+      - {name: sp_k_pct_diff, definition: "K / BF, 150 BF prior"}
+      - {name: sp_bb_pct_diff, definition: "BB / BF, 150 BF prior"}
+      - {name: sp_gb_pct_diff, definition: "GB / (GB + FB), 100 BIP prior"}
+      - {name: sp_hr9_diff, definition: "9 HR / IP, 40 IP prior"}
+      - {name: sp_exp_ip_diff, definition: "mean outs / 3 over the last 5 starts, 5.3 IP prior with weight 2 starts"}
+      - {name: sp_last_pitches_diff, definition: "pitches in the starter's last start"}
+      - {name: sp_days_rest_diff, definition: "days since the starter's last start"}
+      - {name: sp_yes_throws_left, definition: "1 if the YES team's probable starter throws left"}
+      - {name: sp_opp_throws_left, definition: "1 if the opponent's probable starter throws left"}
+    expected_direction: positive for better YES starter (lower FIP / BB% / HR9, higher K% / expected IP)
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: Ablation delta Brier, paired game bootstrap, per evaluation period and pooled (Sec 19).
+
+  - hypothesis_id: H_MLB_L1_OFFENSE
+    family: offense
+    label: CONFIRMATORY
+    description: The posted (or projected) lineup's point-in-time quality and platoon mix explain part of the residual.
+    mechanism: Late lineup news and platoon effects may be priced incompletely.
+    features:
+      - {name: off_quality_diff, definition: "mean over the 9 of (0.69 BB + 0.72 HBP + 0.89 1B + 1.27 2B + 1.62 3B + 2.10 HR) / PA, career lines available <= cutoff, 200 PA prior"}
+      - {name: off_k_pct_diff, definition: "mean lineup K / PA, 200 PA prior"}
+      - {name: off_bb_pct_diff, definition: "mean lineup BB / PA, 200 PA prior"}
+      - {name: off_iso_diff, definition: "mean lineup (2B + 2 3B + 3 HR) / AB, 200 PA prior"}
+      - {name: off_platoon_adv_diff, definition: "share of the 9 with the platoon advantage vs the opposing probable starter (S always)"}
+      - {name: off_lineup_posted_yes, definition: "1 if the YES team's lineup was posted by the cutoff"}
+      - {name: off_lineup_posted_opp, definition: "1 if the opponent's lineup was posted by the cutoff"}
+      - {name: off_lineup_changes_diff, definition: "number of the 9 not in the team's previous game's lineup"}
+    expected_direction: positive for better YES lineup / platoon advantage
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: Ablation delta Brier, paired game bootstrap, per evaluation period and pooled (Sec 19).
+
+  - hypothesis_id: H_MLB_L1_BULLPEN
+    family: bullpen
+    label: CONFIRMATORY
+    description: Bullpen quality and recent reliever workload (fatigue) explain part of the residual.
+    mechanism: >-
+      Reliever usage over the previous days is public but tedious to aggregate;
+      markets may underweight a tired bullpen.
+    features:
+      - {name: bp_quality_diff, definition: "team relievers' FIP-like over the trailing 365 days, 150 IP prior"}
+      - {name: bp_pitches_prev1_diff, definition: "relievers' total pitches on the previous official date"}
+      - {name: bp_pitches_prev3_diff, definition: "relievers' total pitches over the previous 3 official dates"}
+      - {name: bp_hi_lev_avail_diff, definition: "top-3 relievers by saves + holds (30 days) available: <= 25 pitches yesterday and not both previous two days"}
+      - {name: bp_closer_avail_diff, definition: "1 if the 30-day saves leader is available under the same rule"}
+    expected_direction: positive for a better / more rested YES bullpen (negative for YES bullpen pitches)
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: Ablation delta Brier, paired game bootstrap, per evaluation period and pooled (Sec 19).
+
+  - hypothesis_id: H_MLB_L1_ENV
+    family: environment
+    label: CONFIRMATORY
+    description: Home field, park and forecast weather explain part of the residual.
+    mechanism: Wind and temperature forecasts shift run environments; markets may not scale them by lineup power.
+    features:
+      - {name: yes_is_home, definition: "1 if the YES team is at home"}
+      - {name: park_run_factor, definition: "venue runs per game / league runs per game, outcomes available <= cutoff, trailing 3 years, 150-game prior toward 1.0"}
+      - {name: temp_f, definition: "latest forecast (kind = forecast, available_at <= cutoff) temperature"}
+      - {name: wind_out_mph, definition: "forecast wind speed x cos(angle between the direction the wind blows toward and the venue's center-field azimuth); 0 for domes"}
+      - {name: humidity_pct, definition: "latest forecast humidity"}
+      - {name: roof_closed, definition: "1 dome; retractable: forecast roof status, else 1 if precip_prob > 0.4 or temp < 55 F; 0 open"}
+    expected_direction: positive for yes_is_home; others none a priori
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: Ablation delta Brier, paired game bootstrap, per evaluation period and pooled (Sec 19).
+
+  - hypothesis_id: H_MLB_001
+    family: market
+    label: CONFIRMATORY
+    description: Information latency - the exchange absorbs lineup / starter / injury news more slowly than sportsbooks.
+    mechanism: >-
+      A thinner order book with fewer market makers may lag the sportsbooks by
+      minutes after news; fair value is then closer to the books.
+    features:
+      - {name: minutes_since_last_news, definition: "cutoff minus the latest news event (lineup, starter, injury, transaction; not first_seen) available in [start - 180 min, cutoff], minutes"}
+      - {name: book_move_since_news, definition: "YES consensus at cutoff minus YES consensus from odds available <= the news time"}
+      - {name: market_move_since_news, definition: "p_mid minus the contract's midpoint at the latest quote with quote_ts <= the news time"}
+      - {name: latency_gap, definition: "book_move_since_news - market_move_since_news"}
+    expected_direction: positive (outcome moves toward the book when latency_gap > 0)
+    minimum_sample: 300
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: >-
+      Brier improvement vs the market on canonical observations with
+      |latency_gap| > 0.01 (threshold fixed at registration); minimum sample =
+      games with at least one news event in the T-180 to T-30 window.
+
+  - hypothesis_id: H_MLB_002
+    family: market
+    label: CONFIRMATORY
+    description: Thin-market mispricing - less liquid exchange markets drift further from the book consensus.
+    mechanism: Market-maker attention is finite; afternoon and low-profile games get less sharp flow.
+    features:
+      - {name: market_spread, definition: "yes_ask - yes_bid at the observation's quote"}
+      - {name: log_open_interest, definition: "log1p(open interest at the quote)"}
+      - {name: log_volume, definition: "log1p(volume at the quote)"}
+      - {name: is_afternoon_game, definition: "1 if scheduled start is before 17:00 America/New_York"}
+    expected_direction: larger and more persistent |cross_market_gap| in the bottom liquidity tercile
+    minimum_sample: 200
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: >-
+      cross_market_gap distribution and Brier delta stratified by liquidity
+      tercile (observations.liquidity_tercile: open interest cut points from
+      earlier dates); minimum sample is per tercile.
+
+  - hypothesis_id: H_MLB_003
+    family: market
+    label: EXPLORATORY
+    description: Fee-band persistence - gaps smaller than the cost of closing them persist.
+    mechanism: >-
+      The taker fee plus half the spread makes a small gap vs the books
+      unprofitable to arbitrage; if the model knows which side is right it can
+      trade the persistent gap.
+    features:
+      - {name: cross_market_gap, definition: "YES consensus (mean de-vigged book probability available <= quote_ts, <= 60 min old) - p_mid"}
+      - {name: gap_inside_fee_band, definition: "1 if |cross_market_gap| <= half spread + taker fee per contract (versioned FeeSchedule in force on the date) at the ask of the side the gap favors"}
+      - {name: gap_persistence_minutes, definition: "minutes, up to the cutoff (cap 180), since the contract's gap last had the opposite sign or |gap| < 0.01, from the contract's quotes with quote_ts <= cutoff and the consensus available at each"}
+    expected_direction: uncertain (exploratory)
+    minimum_sample: 500
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: Realized edge on trades with |cross_market_gap| inside the fee band vs outside it.
+    status: DISABLED
+    status_reason: >-
+      Disabled as out of scope: fee-band analysis is not part of this
+      demonstration. Kept registered and visible (26.5); not fitted or tested.
+    status_decision: docs/decisions/README.md
+
+  - hypothesis_id: H_MLB_NC
+    family: negative_control
+    label: CONFIRMATORY
+    description: Negative controls carry no information (26.16).
+    mechanism: >-
+      None by construction. Persistent out-of-sample improvement from any of
+      these means leakage, selection bias, a bad significance calculation or a
+      bug until proven otherwise.
+    features:
+      - {name: nc_random, definition: "N(0, 1) from a stable hash of (observation_id, seed)"}
+      - {name: nc_team_hash, definition: "uniform [0, 1) from a stable hash of yes_team"}
+      - {name: nc_permuted_temp, definition: "temp_f of a different game on the same date (seeded derangement), if its forecast is available <= cutoff"}
+      - {name: nc_permuted_wind, definition: "wind_out_mph of a different game on the same date (same derangement)"}
+    expected_direction: none - must not improve out-of-sample Brier
+    minimum_sample: 1000
+    evaluation_periods: [2023H2, 2024H1, 2024H2, 2025H1, 2025H2, 2026H1]
+    primary_metric: >-
+      delta Brier of the model with each control added vs without; FAIL (assume
+      leakage) if it improves in >= ceil(review.min_period_win_fraction x n)
+      evaluation periods with pooled BH q < review.fdr_q (26.16, 26.5).
